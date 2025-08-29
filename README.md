@@ -1,23 +1,11 @@
 visilens
 ========
 
-News / updates
---------------
+This is a fork of visilens modified to use PyMultiNest instead of
+emcee to perform fitting for more uncertainty estimation.
 
-I have finally, finally made the jump to python3 now that 
-python2.7 has been sunset. Any and all future development will
-be in a python3 environment. 
-
-The current status is that all the syntax has been updated to
-python3, but I haven't yet updated based on new external package
-changes. The key one is that for now we still require a version
-of `emcee` prior to 3.0 (most recent was 2.2.1) because in >3.0
-many of the function calls and such have changed.
-
-If you need a python2.7 version of this package, you can find the
-final release version [here](https://github.com/jspilker/visilens/releases/tag/v1.0).
-I know that version works with versions of `emcee` up to at least
-2.1.0, but that package has changed a lot of function calls in versions >3.0.
+It is used in the following publication by Wen & Kemball (2024).
+https://ui.adsabs.harvard.edu/abs/2024Univ...10...37W/abstract
 
 
 About visilens
