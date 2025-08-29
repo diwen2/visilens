@@ -9,6 +9,7 @@ from .class_utils import *
 from .lensing import *
 from .utils import *
 from .calc_likelihood import calc_vis_lnlike
+import pymultinest
 
 arcsec2rad = np.pi/180/3600
 
@@ -196,12 +197,12 @@ def LensModelMCMC(data,lens,source,
       Ds = cosmo.angular_diameter_distance(source[0].z).value
       Dds= cosmo.angular_diameter_distance_z1z2(lens[0].z,source[0].z).value
 
-      p0 = np.array(p0)
+      #p0 = np.array(p0)
       # Create a ball of starting points for the walkers, gaussian ball of 
       # 10% width; if initial value is 0 (eg, astrometric shift), give a small sigma
       # for angles, generally need more spread than 10% to sample well, do 30% for those cases [~0.5% >180deg for p0=100deg]
-      isangle = np.array([0.30 if 'PA' in s or 'angle' in s else 0.1 for s in colnames])
-      initials = emcee.utils.sample_ball(p0,np.asarray([isangle[i]*x if x else 0.05 for i,x in enumerate(p0)]),int(nwalkers))
+      #isangle = np.array([0.30 if 'PA' in s or 'angle' in s else 0.1 for s in colnames])
+      #initials = emcee.utils.sample_ball(p0,np.asarray([isangle[i]*x if x else 0.05 for i,x in enumerate(p0)]),int(nwalkers))
 
       # All the lens objects know if their parameters have been altered since the last time
       # we calculated the deflections. If all the lens pars are fixed, we only need to do the
@@ -211,163 +212,24 @@ def LensModelMCMC(data,lens,source,
             if ilens.__class__.__name__ == 'SIELens': ilens.deflect(xemit,yemit,Dd,Ds,Dds)
             elif ilens.__class__.__name__ == 'ExternalShear': ilens.deflect(xemit,yemit,lens[0])
 
-      # Create the sampler object; uses calc_likelihood function defined elsewhere
-      lenssampler = emcee.EnsembleSampler(nwalkers,ndim,calc_vis_lnlike,
-            args = [data,lens,source,Dd,Ds,Dds,ug,
-                    xmap,ymap,xemit,yemit,indices,
-                    sourcedatamap,scaleamp,shiftphase,modelcal],
-            threads=nthreads,pool=pool)
 
-      
-      # Run burn-in phase
-      print("Running burn-in... ")
-      #pos,prob,rstate,mus = lenssampler.run_mcmc(initials,nburn,storechain=False)
-      for i,result in enumerate(lenssampler.sample(initials,iterations=nburn,storechain=False)):
-            if i%20==0: print('Burn-in step ',i,'/',nburn)
-            pos,prob,rstate,blob = result
-      
-      
-      lenssampler.reset()
-      
-      # Run actual chains
-      print("Done. Running chains... ")
-      for i,result in enumerate(lenssampler.sample(pos,rstate0=rstate,iterations=nstep,storechain=True)):
-            if i%20==0: print('Chain step ',i,'/',nstep)
-      
-      #lenssampler.run_mcmc(pos,nstep,rstate0=rstate)
-      if mpirun: pool.close()
-      print("Mean acceptance fraction: ",np.mean(lenssampler.acceptance_fraction))
+    
+    
+      # number of dimensions our problem has
+      parameters = ['xL0','yL0','ML0','eL0','PAL0','shear','shearangle','xoffS0','yoffS0',
+                    'fluxS0','majaxS0','indexS0','axisratioS0','PAS0']
+      n_params = len(parameters)
+      # name of the output files
+      prefix = "chains/1-"
 
-      #return lenssampler.flatchain,lenssampler.blobs,colnames
-      
-      # Package up the magnifications and modelcal phases; disregards nan points (where
-      # we failed the prior, usu. because a periodic angle wrapped).
-      blobs = lenssampler.blobs
-      mus = np.asarray([[a[0] for a in l] for l in blobs]).flatten(order='F')
-      bad = np.where(np.asarray([np.any(np.isnan(m)) for m in mus],dtype=bool))[0]
-      for k in bad: mus[k] = np.array([np.nan]*len(source))
-      mus = np.asarray(list(mus),dtype=float).reshape((-1,len(source)),order='F') # stupid-ass hack
-      bad = np.isnan(mus)[:,0]
-      #bad = bad.reshape((-1,len(source)),order='F')[:,0]
-      #mus = np.atleast_2d(np.asarray([mus[i] if not bad[i] else [np.nan]*len(source) for i in range(mus.size)])).T
-      colnames.extend(['mu{0:.0f}'.format(i) for i in range(len(source))])
+      # run MultiNest
+      mcmcresult = pymultinest.run(LogLikelihood=log_likelihood, Prior=prior, 
+                                   n_dims=n_params, outputfiles_basename=prefix, verbose=True)
 
-      
-      # Assemble the output. Want to return something that contains both the MCMC chains
-      # themselves, but also metadata about the run.
-      mcmcresult = {}
+      # store the parameter names:
+      #import json
+      #with open('%sparams.json' % prefix, 'w') as f:
+      #      json.dump(parameters, f, indent=2)
 
-      # keep track of git revision, for reproducibility's sake
-      # if run under mpi, this will spew some scaremongering warning text,
-      # but it's fine. use --mca mpi_warn_on_fork 0 in the mpirun statement to disable
-      try: 
-            import subprocess
-            gitd = os.path.abspath(os.path.join(os.path.dirname(__file__),os.pardir))
-            mcmcresult['githash'] = subprocess.check_output('git --git-dir={0:s} --work-tree={1:s} '\
-                  'rev-parse HEAD'.format(gitd+'/.git',gitd),shell=True).rstrip()
-      except:
-            mcmcresult['githash'] = 'No repo found'
-      
-      
-      mcmcresult['datasets'] = [dset.filename for dset in data] # Data files used
-
-      mcmcresult['lens_p0'] = lens      # Initial params for lens,src(s),shear; also tells if fixed, priors, etc.
-      mcmcresult['source_p0'] = source
-      
-      if sourcedatamap: mcmcresult['sourcedatamap'] = sourcedatamap
-      mcmcresult['xmax'] = xmax
-      mcmcresult['highresbox'] = highresbox
-      mcmcresult['fieldres'] = fieldres
-      mcmcresult['emitres'] = emitres
-      if any(scaleamp): mcmcresult['scaleamp'] = scaleamp
-      if any(shiftphase): mcmcresult['shiftphase'] = shiftphase
-
-      mcmcresult['chains'] = np.core.records.fromarrays(np.hstack((lenssampler.flatchain[~bad],mus[~bad])).T,names=colnames)
-      mcmcresult['lnlike'] = lenssampler.flatlnprobability[~bad]
-      
-      # Keep track of best-fit params, derived from chains.
-      c = copy.deepcopy(mcmcresult['chains'])
-      mcmcresult['best-fit'] = {}
-      pbest = []
-      # Calculate the best fit values as medians of each param
-      lens,source = copy.deepcopy(mcmcresult['lens_p0']), copy.deepcopy(mcmcresult['source_p0'])
-      for i,ilens in enumerate(lens):
-            if ilens.__class__.__name__ == 'SIELens':
-                  ilens.__dict__['_altered'] = True
-                  for key in ['x','y','M','e','PA']:
-                        if not vars(ilens)[key]['fixed']:
-                              ilens.__dict__[key]['value'] = np.median(c[key+'L'+str(i)])
-                              pbest.append(np.median(c[key+'L'+str(i)]))
-            elif ilens.__class__.__name__ == 'ExternalShear':
-                  for key in ['shear','shearangle']:
-                        if not vars(ilens)[key]['fixed']:
-                              ilens.__dict__[key]['value'] = np.median(c[key])
-                              pbest.append(np.median(c[key]))
-      
-      mcmcresult['best-fit']['lens'] = lens
-
-      # now do the source(s)
-      for i,src in enumerate(source): # Source is a list of source objects
-            if src.__class__.__name__ == 'GaussSource':
-                  for key in ['xoff','yoff','flux','width']:
-                        if not vars(src)[key]['fixed']:
-                              src.__dict__[key]['value'] = np.median(c[key+'S'+str(i)])
-                              pbest.append(np.median(c[key+'S'+str(i)]))
-            elif src.__class__.__name__ == 'SersicSource':
-                  for key in ['xoff','yoff','flux','majax','index','axisratio','PA']:
-                        if not vars(src)[key]['fixed']:
-                              src.__dict__[key]['value'] = np.median(c[key+'S'+str(i)])
-                              pbest.append(np.median(c[key+'S'+str(i)]))
-            elif src.__class__.__name__ == 'PointSource':
-                  for key in ['xoff','yoff','flux']:
-                        if not vars(src)[key]['fixed']:
-                              src.__dict__[key]['value'] = np.median(c[key+'S'+str(i)])
-                              pbest.append(np.median(c[key+'S'+str(i)]))
-
-      mcmcresult['best-fit']['source'] = source
-      mcmcresult['best-fit']['magnification'] = np.median(mus[~bad],axis=0)
-
-      # Any amplitude scaling or astrometric shifts
-      bfscaleamp = np.ones(len(data))
-      if 'scaleamp' in mcmcresult.keys():
-            for i,t in enumerate(mcmcresult['scaleamp']): # only matters if >1 datasets
-                  if i==0: pass
-                  elif t: 
-                        bfscaleamp[i] = np.median(c['ampscale_dset'+str(i)])
-                        pbest.append(np.median(c['ampscale_dset'+str(i)]))
-                  else: pass
-      mcmcresult['best-fit']['scaleamp'] = bfscaleamp
-      
-      bfshiftphase = np.zeros((len(data),2))
-      if 'shiftphase' in mcmcresult.keys():
-            for i,t in enumerate(mcmcresult['shiftphase']):
-                  if i==0: pass # only matters if >1 datasets
-                  elif t:
-                        bfshiftphase[i][0] = np.median(c['astromshift_x_dset'+str(i)])
-                        bfshiftphase[i][1] = np.median(c['astromshift_y_dset'+str(i)])
-                        pbest.append(np.median(c['astromshift_x_dset'+str(i)]))
-                        pbest.append(np.median(c['astromshift_y_dset'+str(i)]))
-                  else: pass # no shifting
-      mcmcresult['best-fit']['shiftphase'] = bfshiftphase
-      
-      mcmcresult['best-fit']['lnlike'] = calc_vis_lnlike(pbest,data,mcmcresult['best-fit']['lens'],
-            mcmcresult['best-fit']['source'],
-            Dd,Ds,Dds,ug,xmap,ymap,xemit,yemit,indices,
-            sourcedatamap,scaleamp,shiftphase,modelcal)[0]
-      
-      # Calculate the deviance information criterion, using the Spiegelhalter+02 definition (cf Gelman+04)
-      mcmcresult['best-fit']['DIC'] = -4*np.mean(mcmcresult['lnlike']) + 2*mcmcresult['best-fit']['lnlike']
-      
-      # If we did any modelcal stuff, keep the antenna phase offsets here
-      if any(modelcal): 
-            mcmcresult['modelcal'] = [True if j else False for j in modelcal]
-            dp = np.squeeze(np.asarray([[a[1] for a in l if ~np.any(np.isnan(a[0]))] for l in blobs]))
-            a = [x for l in dp for x in l] # Have to dick around with this if we had any nan's
-            dphases = np.squeeze(np.reshape(a,(nwalkers*nstep-bad.sum(),len(data),-1),order='F'))
-            if len(data) > 1: 
-                  for i in range(len(data)):
-                        if modelcal[i]: mcmcresult['calphases_dset'+str(i)] = np.vstack(dphases[:,i])
-            else: 
-                  if any(modelcal): mcmcresult['calphases_dset0'] = dphases
-      
       return mcmcresult
+

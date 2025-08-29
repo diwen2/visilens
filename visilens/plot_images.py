@@ -190,10 +190,19 @@ def plot_images(data,mcmcresult,returnimages=False,plotcombined=False,plotall=Fa
                   
       for row in range(axarr.shape[0]):
             
-            # Image the data
-            imdata = uvimageslow(plotdata[row],imsize,pixsize,taper)
-            # Image the model
-            immodel = uvimageslow(plotinterp[row],imsize,pixsize,taper)
+            try:
+                imdata = np.load("imdata.npy")
+                print("Found and loaded saved immdate.npy")
+                immodel = np.load("immodel.npy")
+                print("Found and loaded saved immodel.npy")
+            except FileNotFoundError:
+                # Image the data
+                imdata = uvimageslow(plotdata[row],imsize,pixsize,taper)
+                np.save('imdata', imdata, allow_pickle=True, fix_imports=True)
+                # Image the model
+                immodel = uvimageslow(plotinterp[row],imsize,pixsize,taper)
+                np.save('immodel', immodel, allow_pickle=True, fix_imports=True)
+            
             # And the residuals
             imdiff = imdata - immodel
 
